@@ -114,7 +114,8 @@ Send a single feature or label event:
   "structure": {
     "trend": "DOWN",
     "bos": 0,
-    "liquidity_sweep": 0
+    "liquidity_sweep": 0,
+    "structure_strength": 0.215731
   },
   "context": {
     "session": "LONDON",
@@ -131,7 +132,10 @@ Send a single feature or label event:
 {
   "status": "ok",
   "received": true,
-  "event_id": "DCF95E87C5FADDCA"
+  "persisted": true,
+  "event_id": "DCF95E87C5FADDCA",
+  "action": "created",
+  "record_id": 123
 }
 ```
 
@@ -156,7 +160,12 @@ Send multiple events at once:
 {
   "status": "ok",
   "received": true,
-  "count": 2
+  "processed": 2,
+  "created": 2,
+  "updated": 0,
+  "skipped": 0,
+  "failed": 0,
+  "total": 2
 }
 ```
 

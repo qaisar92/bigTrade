@@ -91,6 +91,9 @@ class Candle(Base):
 
 class Indicators(Base):
     __tablename__ = "indicators"
+    __table_args__ = (
+        UniqueConstraint("candle_id", "version"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     candle_id: Mapped[int] = mapped_column(ForeignKey("candles.id"), nullable=False)

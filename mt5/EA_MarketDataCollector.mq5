@@ -165,12 +165,25 @@ void WriteDeadLetter(const string event_id, const string reason, const string pa
 bool IsSentEvent(const string event_id)
 {
    int n = ArraySize(g_sent_event_ids);
-   for(int i = 0; i < n; i++)
+   for(int i = n - 1; i >= 0; i--)
    {
       if(g_sent_event_ids[i] == event_id)
          return true;
    }
    return false;
+}
+
+void TrimSentEventCache()
+{
+   int n = ArraySize(g_sent_event_ids);
+   if(n <= SENT_CACHE_LIMIT)
+      return;
+
+   int drop = n - SENT_CACHE_LIMIT;
+   for(int i = 0; i < SENT_CACHE_LIMIT; i++)
+      g_sent_event_ids[i] = g_sent_event_ids[i + drop];
+
+   ArrayResize(g_sent_event_ids, SENT_CACHE_LIMIT);
 }
 
 void AddSentEvent(const string event_id)
@@ -190,13 +203,7 @@ void AddSentEvent(const string event_id)
       FileClose(f);
    }
 
-   if(ArraySize(g_sent_event_ids) > SENT_CACHE_LIMIT)
-   {
-      int drop = ArraySize(g_sent_event_ids) - SENT_CACHE_LIMIT;
-      for(int i = 0; i < SENT_CACHE_LIMIT; i++)
-         g_sent_event_ids[i] = g_sent_event_ids[i + drop];
-      ArrayResize(g_sent_event_ids, SENT_CACHE_LIMIT);
-   }
+   TrimSentEventCache();
 }
 
 void LoadSentEvents()
@@ -217,6 +224,8 @@ void LoadSentEvents()
       g_sent_event_ids[n] = event_id;
    }
    FileClose(f);
+
+   TrimSentEventCache();
 }
 
 // ---------- Queue persistence ----------
@@ -301,6 +310,18 @@ void RemoveQueueItem(const int idx)
 
    ArrayResize(g_queue, n - 1);
    PersistQueueToFile();
+}
+
+void RemoveQueueItemNoPersist(const int idx)
+{
+   int n = ArraySize(g_queue);
+   if(idx < 0 || idx >= n)
+      return;
+
+   for(int i = idx; i < n - 1; i++)
+      g_queue[i] = g_queue[i + 1];
+
+   ArrayResize(g_queue, n - 1);
 }
 
 // ---------- API ----------
@@ -416,6 +437,36 @@ SendResult SendPayloadWithRetry(const string event_id, const string payload)
    return SEND_RETRYABLE_FAIL;
 }
 
+void HandleSendOutcome(const string event_id, const string payload, const string deadletter_reason)
+{
+   SendResult r = SendPayloadWithRetry(event_id, payload);
+   if(r == SEND_OK || r == SEND_DUPLICATE)
+      AddSentEvent(event_id);
+   else if(r == SEND_NON_RETRYABLE_FAIL)
+   {
+      WriteDeadLetter(event_id, deadletter_reason, payload);
+      AddSentEvent(event_id);
+   }
+   else
+      EnqueuePayload(event_id, payload);
+}
+
+void DispatchPayload(const string event_id, const string payload, const string deadletter_reason)
+{
+   if(event_id == "" || payload == "")
+      return;
+   if(IsSentEvent(event_id) || IsQueued(event_id))
+      return;
+
+   if(InpEnableBatching)
+   {
+      EnqueuePayload(event_id, payload);
+      return;
+   }
+
+   HandleSendOutcome(event_id, payload, deadletter_reason);
+}
+
 string BuildBatchPayload(const int start_index, const int item_count)
 {
    string json = "{";
@@ -484,6 +535,7 @@ void ProcessQueue()
 {
    if(InpEnableBatching)
    {
+      bool queue_changed = false;
       while(ArraySize(g_queue) > 0)
       {
          int batch_size = MathMax(1, MathMin(InpBatchSize, ArraySize(g_queue)));
@@ -495,7 +547,8 @@ void ProcessQueue()
             for(int i = 0; i < batch_size; i++)
                AddSentEvent(g_queue[i].event_id);
             for(int j = 0; j < batch_size; j++)
-               RemoveQueueItem(0);
+               RemoveQueueItemNoPersist(0);
+            queue_changed = true;
             continue;
          }
 
@@ -510,22 +563,28 @@ void ProcessQueue()
                AddSentEvent(g_queue[m].event_id);
             }
             for(int n = 0; n < batch_size; n++)
-               RemoveQueueItem(0);
+               RemoveQueueItemNoPersist(0);
+            queue_changed = true;
             continue;
          }
 
          // Retryable failure: keep queue for next candle.
          break;
       }
+
+      if(queue_changed)
+         PersistQueueToFile();
       return;
    }
 
    int i = 0;
+   bool queue_changed = false;
    while(i < ArraySize(g_queue))
    {
       if(IsSentEvent(g_queue[i].event_id))
       {
-         RemoveQueueItem(i);
+         RemoveQueueItemNoPersist(i);
+         queue_changed = true;
          continue;
       }
 
@@ -535,13 +594,15 @@ void ProcessQueue()
       if(r == SEND_OK || r == SEND_DUPLICATE)
       {
          AddSentEvent(g_queue[i].event_id);
-         RemoveQueueItem(i);
+         RemoveQueueItemNoPersist(i);
+         queue_changed = true;
       }
       else if(r == SEND_NON_RETRYABLE_FAIL)
       {
          WriteDeadLetter(g_queue[i].event_id, "single_non_retryable", g_queue[i].payload);
          AddSentEvent(g_queue[i].event_id);
-         RemoveQueueItem(i);
+         RemoveQueueItemNoPersist(i);
+         queue_changed = true;
       }
       else
       {
@@ -549,6 +610,9 @@ void ProcessQueue()
          i++;
       }
    }
+
+   if(queue_changed)
+      PersistQueueToFile();
 }
 
 // ---------- Feature computation ----------
@@ -563,6 +627,85 @@ bool GetIndicatorValue(const int handle, const int buffer_index, const int shift
 
    out_val = tmp[0];
    return IsFiniteNumber(out_val);
+}
+
+double ClampValue(const double value, const double min_value, const double max_value)
+{
+   if(value < min_value)
+      return min_value;
+   if(value > max_value)
+      return max_value;
+   return value;
+}
+
+double NormalizeDistance(const double distance, const double atr, const double point)
+{
+   double scale = MathMax(atr, point);
+   if(scale <= 0.0)
+      return 0.0;
+   return distance / scale;
+}
+
+double EstimateSlippage(const double spread,
+                        const double atr,
+                        const double candle_range,
+                        const double candle_body,
+                        const double point)
+{
+   // Slippage increases when spread widens and when bar movement/volatility expands.
+   double base = MathMax(spread, point);
+   double estimate = base
+                   + (0.10 * MathMax(atr, 0.0))
+                   + (0.06 * MathMax(candle_range, 0.0))
+                   + (0.04 * MathMax(candle_body, 0.0));
+
+   if(!IsFiniteNumber(estimate) || estimate < point)
+      return point;
+   return estimate;
+}
+
+double ComputeBreakoutStructureScore(const double breakout_dist,
+                                     const double wick_dist,
+                                     const double atr,
+                                     const double point,
+                                     const double body_ratio,
+                                     const double close_location)
+{
+   return (1.35 * NormalizeDistance(breakout_dist, atr, point))
+        + (0.55 * NormalizeDistance(wick_dist, atr, point))
+        + (0.35 * body_ratio)
+        + (0.25 * close_location);
+}
+
+double ComputeSweepStructureScore(const double wick_dist,
+                                  const double atr,
+                                  const double point,
+                                  const double rejection,
+                                  const double body_ratio)
+{
+   return (0.90 * NormalizeDistance(wick_dist, atr, point))
+        + (0.45 * rejection)
+        + (0.20 * (1.0 - body_ratio));
+}
+
+double ComputeBaselineStructureScore(const double prev_swing_high,
+                                     const double prev_swing_low,
+                                     const double close_price,
+                                     const double candle_range,
+                                     const double atr,
+                                     const double point,
+                                     const double body_ratio)
+{
+   double swing_width = MathMax(prev_swing_high - prev_swing_low, point);
+   double dist_to_upper = MathAbs(prev_swing_high - close_price);
+   double dist_to_lower = MathAbs(close_price - prev_swing_low);
+   double nearest_dist = MathMin(dist_to_upper, dist_to_lower);
+   double boundary_proximity = 1.0 - ClampValue(nearest_dist / swing_width, 0.0, 1.0);
+   double expansion = ClampValue(NormalizeDistance(candle_range, atr, point), 0.0, 2.0) / 2.0;
+
+   return (0.32 * boundary_proximity)
+        + (0.20 * expansion)
+        + (0.14 * body_ratio);
 }
 
 string DetectSessionUtc(const datetime utc_ts)
@@ -580,12 +723,33 @@ string DetectSessionUtc(const datetime utc_ts)
    return "ASIA";
 }
 
-string DetectTrend(const double ema50, const double ema200)
+string DetectTrend(const double close_price,
+                   const double ema20,
+                   const double ema50,
+                   const double ema200,
+                   const double atr,
+                   const double point)
 {
-   if(ema50 > ema200)
+   double norm_fast = NormalizeDistance(MathAbs(ema20 - ema50), atr, point);
+   double norm_slow = NormalizeDistance(MathAbs(ema50 - ema200), atr, point);
+
+   bool bullish_stack = (ema20 > ema50 && ema50 > ema200);
+   bool bearish_stack = (ema20 < ema50 && ema50 < ema200);
+   bool price_above_fast = (close_price >= ema20);
+   bool price_below_fast = (close_price <= ema20);
+
+   if(bullish_stack && price_above_fast && norm_fast >= 0.08 && norm_slow >= 0.15)
       return "UP";
-   if(ema50 < ema200)
+
+   if(bearish_stack && price_below_fast && norm_fast >= 0.08 && norm_slow >= 0.15)
       return "DOWN";
+
+   if(close_price > ema50 && ema50 > ema200 && norm_slow >= 0.35)
+      return "UP";
+
+   if(close_price < ema50 && ema50 < ema200 && norm_slow >= 0.35)
+      return "DOWN";
+
    return "SIDEWAYS";
 }
 
@@ -624,41 +788,96 @@ bool ComputeStructure(const string symbol,
          prev_swing_low = rates[i].low;
    }
 
+   double o = rates[0].open;
    double c = rates[0].close;
    double h = rates[0].high;
    double l = rates[0].low;
+   double threshold = (double)MathMax(1, InpSweepThresholdPoints) * point;
+   double candle_range = MathMax(h - l, point);
+   double candle_body = MathAbs(c - o);
+   double body_ratio = ClampValue(candle_body / candle_range, 0.0, 1.0);
 
-   if(c > prev_swing_high || c < prev_swing_low)
+   bool closed_above_high = (c > prev_swing_high);
+   bool closed_below_low = (c < prev_swing_low);
+   bool swept_high = ((h - prev_swing_high) >= threshold);
+   bool swept_low = ((prev_swing_low - l) >= threshold);
+
+   if(closed_above_high || closed_below_low)
       bos = 1;
 
-   double threshold = (double)MathMax(1, InpSweepThresholdPoints) * point;
-   if((h - prev_swing_high) >= threshold || (prev_swing_low - l) >= threshold)
+   if((swept_high && !closed_above_high) || (swept_low && !closed_below_low))
       liq_sweep = 1;
 
-   // Strength combines close-based break distance and wick-based sweep distance,
-   // normalized by ATR so scores are comparable across volatility regimes.
-   double breakout_dist = 0.0;
-   if(c > prev_swing_high)
-      breakout_dist = c - prev_swing_high;
-   else if(c < prev_swing_low)
-      breakout_dist = prev_swing_low - c;
+   double breakout_up = 0.0;
+   double breakout_down = 0.0;
+   double wick_up = 0.0;
+   double wick_down = 0.0;
 
-   double sweep_dist = 0.0;
-   if(h > prev_swing_high)
-      sweep_dist = h - prev_swing_high;
-   if(l < prev_swing_low)
+   if(closed_above_high)
+      breakout_up = c - prev_swing_high;
+   if(closed_below_low)
+      breakout_down = prev_swing_low - c;
+   if(swept_high)
+      wick_up = h - prev_swing_high;
+   if(swept_low)
+      wick_down = prev_swing_low - l;
+
+   double score = 0.0;
+   if(closed_above_high)
    {
-      double down_sweep = prev_swing_low - l;
-      if(down_sweep > sweep_dist)
-         sweep_dist = down_sweep;
+      double close_location = ClampValue((c - l) / candle_range, 0.0, 1.0);
+      score = ComputeBreakoutStructureScore(
+         breakout_up,
+         wick_up,
+         atr,
+         point,
+         body_ratio,
+         close_location
+      );
+   }
+   else if(closed_below_low)
+   {
+      double close_location = ClampValue((h - c) / candle_range, 0.0, 1.0);
+      score = ComputeBreakoutStructureScore(
+         breakout_down,
+         wick_down,
+         atr,
+         point,
+         body_ratio,
+         close_location
+      );
+   }
+   else if(liq_sweep == 1)
+   {
+      if(swept_high)
+      {
+         double rejection = ClampValue((prev_swing_high - c) / candle_range, 0.0, 1.0);
+         score = ComputeSweepStructureScore(wick_up, atr, point, rejection, body_ratio);
+      }
+
+      if(swept_low)
+      {
+         double rejection = ClampValue((c - prev_swing_low) / candle_range, 0.0, 1.0);
+         double down_score = ComputeSweepStructureScore(wick_down, atr, point, rejection, body_ratio);
+         if(down_score > score)
+            score = down_score;
+      }
+   }
+   else
+   {
+      // Continuous baseline strength for non-break bars so the feature remains informative.
+      score = ComputeBaselineStructureScore(
+         prev_swing_high,
+         prev_swing_low,
+         c,
+         candle_range,
+         atr,
+         point,
+         body_ratio
+      );
    }
 
-   double base = breakout_dist;
-   if(sweep_dist > base)
-      base = sweep_dist;
-
-   double norm = MathMax(atr, point);
-   structure_strength = base / norm;
+   structure_strength = ClampValue(score, 0.0, 5.0);
 
    if(!IsFiniteNumber(structure_strength) || structure_strength < 0.0)
       structure_strength = 0.0;
@@ -693,6 +912,7 @@ bool ValidateMainData(const double o,
                       const double c,
                       const double volume,
                       const double spread,
+                      const double slippage_estimate,
                       const long spread_points,
                       const double rsi,
                       const double macd,
@@ -720,6 +940,12 @@ bool ValidateMainData(const double o,
    if(spread < 0.0 || spread_points > InpMaxSpreadPoints)
    {
       reason = "spread_out_of_range";
+      return false;
+   }
+
+   if(!IsFiniteNumber(slippage_estimate) || slippage_estimate < 0.0)
+   {
+      reason = "slippage_invalid";
       return false;
    }
 
@@ -756,6 +982,7 @@ string BuildMainPayload(const string event_id,
                         const double structure_strength,
                         const string session,
                         const double spread,
+                        const double slippage_estimate,
                         const double bid,
                         const double ask,
                         const double volatility)
@@ -799,6 +1026,7 @@ string BuildMainPayload(const string event_id,
    json += "\"context\":{";
    json += "\"session\":\"" + session + "\",";
    json += "\"spread\":" + DoubleToString(spread, 10) + ",";
+   json += "\"slippage_estimate\":" + DoubleToString(slippage_estimate, 10) + ",";
    json += "\"bid\":" + DoubleToString(bid, 10) + ",";
    json += "\"ask\":" + DoubleToString(ask, 10) + ",";
    json += "\"volatility\":" + DoubleToString(volatility, 10);
@@ -873,7 +1101,7 @@ bool BuildMainEvent(TFContext &ctx, string &event_id, string &payload)
                         structure_strength, atr, swing_high, swing_low))
       return false;
 
-   string trend = DetectTrend(ema50, ema200);
+   string trend = DetectTrend(r[0].close, ema20, ema50, ema200, atr, point);
    string session = DetectSessionUtc(bar_utc);
 
    double bid = 0.0;
@@ -884,12 +1112,15 @@ bool BuildMainEvent(TFContext &ctx, string &event_id, string &payload)
    long spread_points = 0;
    SymbolInfoInteger(g_symbol, SYMBOL_SPREAD, spread_points);
    double spread = (double)spread_points * point;
+   double candle_range = MathMax(r[0].high - r[0].low, point);
+   double candle_body = MathAbs(r[0].close - r[0].open);
+   double slippage_estimate = EstimateSlippage(spread, atr, candle_range, candle_body, point);
 
    double volume = (r[0].real_volume > 0 ? (double)r[0].real_volume : (double)r[0].tick_volume);
 
    string dq_reason = "";
    if(!ValidateMainData(r[0].open, r[0].high, r[0].low, r[0].close,
-                        volume, spread, spread_points,
+                        volume, spread, slippage_estimate, spread_points,
                         rsi, macd, macd_sig, ema20, ema50, ema200, atr,
                         dq_reason))
    {
@@ -905,7 +1136,7 @@ bool BuildMainEvent(TFContext &ctx, string &event_id, string &payload)
                               r[0].open, r[0].high, r[0].low, r[0].close, volume,
                               rsi, macd, macd_sig, ema20, ema50, ema200, atr,
                               trend, bos, liquidity_sweep, structure_strength,
-                              session, spread, bid, ask, atr);
+                              session, spread, slippage_estimate, bid, ask, atr);
 
    return true;
 }
@@ -966,28 +1197,7 @@ void ProcessTimeframe(TFContext &ctx)
    string event_id = "";
    string payload = "";
    if(BuildMainEvent(ctx, event_id, payload))
-   {
-      if(!IsSentEvent(event_id) && !IsQueued(event_id))
-      {
-         if(InpEnableBatching)
-         {
-            EnqueuePayload(event_id, payload);
-         }
-         else
-         {
-            SendResult r = SendPayloadWithRetry(event_id, payload);
-            if(r == SEND_OK || r == SEND_DUPLICATE)
-               AddSentEvent(event_id);
-            else if(r == SEND_NON_RETRYABLE_FAIL)
-            {
-               WriteDeadLetter(event_id, "feature_non_retryable", payload);
-               AddSentEvent(event_id);
-            }
-            else
-               EnqueuePayload(event_id, payload);
-         }
-      }
-   }
+      DispatchPayload(event_id, payload, "feature_non_retryable");
    else
    {
       Print("BuildMainEvent failed. symbol=", g_symbol, " tf=", ctx.tf_name);
@@ -998,28 +1208,7 @@ void ProcessTimeframe(TFContext &ctx)
       string label_event_id = "";
       string label_payload = "";
       if(BuildLabelEvent(ctx, label_event_id, label_payload))
-      {
-         if(!IsSentEvent(label_event_id) && !IsQueued(label_event_id))
-         {
-            if(InpEnableBatching)
-            {
-               EnqueuePayload(label_event_id, label_payload);
-            }
-            else
-            {
-               SendResult r = SendPayloadWithRetry(label_event_id, label_payload);
-               if(r == SEND_OK || r == SEND_DUPLICATE)
-                  AddSentEvent(label_event_id);
-               else if(r == SEND_NON_RETRYABLE_FAIL)
-               {
-                  WriteDeadLetter(label_event_id, "label_non_retryable", label_payload);
-                  AddSentEvent(label_event_id);
-               }
-               else
-                  EnqueuePayload(label_event_id, label_payload);
-            }
-         }
-      }
+         DispatchPayload(label_event_id, label_payload, "label_non_retryable");
    }
 
    ctx.last_processed_bar_utc = closed_bar_utc;

@@ -1,22 +1,48 @@
+from collections.abc import Generator
+
 from sqlalchemy import create_engine
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import settings
 from app.db.models import Base
 
-engine = create_engine(
-    settings.database_url,
-    pool_size=settings.database_pool_size,
-    max_overflow=settings.database_max_overflow,
-    echo=False,
-)
-
-_SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+_engine: Engine | None = None
+_session_factory: sessionmaker[Session] | None = None
 
 
-def get_db():
+def get_engine() -> Engine:
+    """Create the SQLAlchemy engine lazily so imports stay cheap and resilient."""
+    global _engine
+
+    if _engine is None:
+        _engine = create_engine(
+            settings.database_url,
+            pool_size=settings.database_pool_size,
+            max_overflow=settings.database_max_overflow,
+            pool_pre_ping=True,
+            echo=False,
+        )
+
+    return _engine
+
+
+def _get_session_factory() -> sessionmaker[Session]:
+    global _session_factory
+
+    if _session_factory is None:
+        _session_factory = sessionmaker(
+            autocommit=False,
+            autoflush=False,
+            bind=get_engine(),
+        )
+
+    return _session_factory
+
+
+def get_db() -> Generator[Session, None, None]:
     """FastAPI dependency: yield a database session and close it when done."""
-    db = _SessionLocal()
+    db = _get_session_factory()()
     try:
         yield db
     finally:
@@ -25,4 +51,4 @@ def get_db():
 
 def init_db() -> None:
     """Create all tables if they don't exist."""
-    Base.metadata.create_all(bind=engine)
+    Base.metadata.create_all(bind=get_engine())

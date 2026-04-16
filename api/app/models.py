@@ -1,7 +1,9 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+_UTC = timezone.utc
 
 
 class _StrictModel(BaseModel):
@@ -37,12 +39,13 @@ class Structure(_StrictModel):
     trend: Literal["UP", "DOWN", "SIDEWAYS"]
     bos: int = Field(ge=0, le=1)
     liquidity_sweep: int = Field(ge=0, le=1)
-    structure_strength: float = Field(ge=0)
+    structure_strength: float = Field(ge=0, le=5)
 
 
 class Context(_StrictModel):
     session: Literal["ASIA", "LONDON", "NEW_YORK", "OVERLAP"]
     spread: float = Field(ge=0)
+    slippage_estimate: float = Field(ge=0)
     bid: float = Field(gt=0)
     ask: float = Field(gt=0)
     volatility: float = Field(ge=0)
@@ -67,9 +70,16 @@ class _EventBase(_StrictModel):
     label_version: str
     dataset_split: Literal["train", "test", "live"]
     event_id: str
-    symbol: str
-    timeframe: str
-    timestamp_utc: str
+    symbol: str = Field(min_length=1, max_length=32)
+    timeframe: Literal["M1", "M5", "M15", "H1"]
+    timestamp_utc: datetime
+
+    @field_validator("timestamp_utc")
+    @classmethod
+    def _normalize_timestamp_utc(cls, value: datetime) -> datetime:
+        if value.tzinfo is None:
+            raise ValueError("timestamp_utc must include timezone information")
+        return value.astimezone(_UTC)
 
 
 class FeatureEvent(_EventBase):
@@ -83,7 +93,14 @@ class FeatureEvent(_EventBase):
 class LabelEvent(_EventBase):
     event_type: Literal["label"]
     label: LabelData
-    computed_at_utc: str
+    computed_at_utc: datetime
+
+    @field_validator("computed_at_utc")
+    @classmethod
+    def _normalize_computed_at_utc(cls, value: datetime) -> datetime:
+        if value.tzinfo is None:
+            raise ValueError("computed_at_utc must include timezone information")
+        return value.astimezone(_UTC)
 
 
 # Discriminated union used as the single-event request body type.
@@ -97,4 +114,4 @@ class BatchIngestRequest(_StrictModel):
     event_type: Literal["batch"] = "batch"
     schema_version: str
     dataset_split: Literal["train", "test", "live"]
-    items: list[EventPayload]
+    items: list[EventPayload] = Field(min_length=1)
