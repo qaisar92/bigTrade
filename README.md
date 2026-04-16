@@ -50,7 +50,7 @@ postgresql://admin:admin123@localhost:5432/bot_trading
 - Password: `admin123`
 - Preconfigured server: `bot-trading-postgres`
 
-Auto-registered server details:
+Server connection details:
 
 - Host name/address: `postgres`
 - Port: `5432`
@@ -79,5 +79,4 @@ PGADMIN_PORT=5050
 - PostgreSQL data persists in the named Docker volume `postgres_data`.
 - The PostgreSQL volume is mounted at `/var/lib/postgresql` to match the `postgres:latest` image layout used by PostgreSQL 18+.
 - pgAdmin data persists in the named Docker volume `pgadmin_data`.
-- pgAdmin imports the server definition during container startup.
 - `restart: unless-stopped` is enabled for both services for better operational resilience.

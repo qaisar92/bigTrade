@@ -1,0 +1,13 @@
+{
+  "Servers": {
+    "1": {
+      "Name": "bot-trading-postgres",
+      "Group": "Servers",
+      "Host": "postgres",
+      "Port": 5432,
+      "MaintenanceDB": "bot_trading",
+      "Username": "admin",
+      "SSLMode": "prefer"
+    }
+  }
+}
