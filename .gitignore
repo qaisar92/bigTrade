@@ -1,0 +1,58 @@
+# filepath: .gitignore
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+*.pdb
+*.egg-info/
+.eggs/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+
+# VS Code
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test and coverage
+htmlcov/
+.coverage
+.tox/
+.nox/
+.cache/
+pytest_cache/
+
+# Build
+build/
+dist/
+*.log
+
+# Installer logs
+debug.log
+pip-log.txt
+pip-delete-this-directory.txt
+
+# mypy
+.mypy_cache/
+.dmypy.json
+
+# Pyre type checker
+.pyre/
+
+# Pyright type checker
+.pyright/
+
+# dotenv environment variables
+.env
+.env.*
