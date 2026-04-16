@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db.models import Candle, Indicators, Label, MarketContext, MarketStructure, Symbol, Timeframe
-from app.models import FeatureEvent, LabelEvent
+from app.schemas import FeatureEvent, LabelEvent
 
 _UTC = timezone.utc
 _TF_MINUTES: dict[str, int] = {"M1": 1, "M5": 5, "M15": 15, "H1": 60}

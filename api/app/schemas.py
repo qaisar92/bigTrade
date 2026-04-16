@@ -13,11 +13,11 @@ class _StrictModel(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Candle sub-models
+# Candle sub-schemas
 # ---------------------------------------------------------------------------
 
 
-class Candle(_StrictModel):
+class CandleSchema(_StrictModel):
     open: float = Field(gt=0)
     high: float = Field(gt=0)
     low: float = Field(gt=0)
@@ -25,7 +25,7 @@ class Candle(_StrictModel):
     volume: float = Field(ge=0)
 
 
-class Indicators(_StrictModel):
+class IndicatorsSchema(_StrictModel):
     rsi: float = Field(ge=0, le=100)
     macd: float
     macd_signal: float
@@ -35,14 +35,14 @@ class Indicators(_StrictModel):
     atr: float = Field(ge=0)
 
 
-class Structure(_StrictModel):
+class StructureSchema(_StrictModel):
     trend: Literal["UP", "DOWN", "SIDEWAYS"]
     bos: int = Field(ge=0, le=1)
     liquidity_sweep: int = Field(ge=0, le=1)
     structure_strength: float = Field(ge=0, le=5)
 
 
-class Context(_StrictModel):
+class ContextSchema(_StrictModel):
     session: Literal["ASIA", "LONDON", "NEW_YORK", "OVERLAP"]
     spread: float = Field(ge=0)
     slippage_estimate: float = Field(ge=0)
@@ -51,14 +51,14 @@ class Context(_StrictModel):
     volatility: float = Field(ge=0)
 
 
-class LabelData(_StrictModel):
+class LabelDataSchema(_StrictModel):
     label: int = Field(ge=0, le=2)
     future_return_percent: float
     hold_period_candles: int = Field(ge=1, le=5)
 
 
 # ---------------------------------------------------------------------------
-# Event models
+# Event schemas
 # ---------------------------------------------------------------------------
 
 
@@ -84,15 +84,15 @@ class _EventBase(_StrictModel):
 
 class FeatureEvent(_EventBase):
     event_type: Literal["feature"]
-    candle: Candle
-    indicators: Indicators
-    structure: Structure
-    context: Context
+    candle: CandleSchema
+    indicators: IndicatorsSchema
+    structure: StructureSchema
+    context: ContextSchema
 
 
 class LabelEvent(_EventBase):
     event_type: Literal["label"]
-    label: LabelData
+    label: LabelDataSchema
     computed_at_utc: datetime
 
     @field_validator("computed_at_utc")

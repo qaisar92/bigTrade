@@ -1,7 +1,7 @@
 [project]
 name = "api"
 version = "0.1.0"
-description = "Add your description here"
+description = "Trading data ingestion API for MT5 feature and label events"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
